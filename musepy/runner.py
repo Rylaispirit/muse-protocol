@@ -1,16 +1,16 @@
-"""多账号批量调度（开源版，语义对齐本地实现）。
+"""Điều phối nhiều tài khoản theo quy tắc của bản triển khai gốc.
 
-调度规则：
-- worker 独占一条 sticky 代理行（claim/release），不抢他人的行；池耗尽才共享并打日志。
-- max_per_ip 按"验证成功数"计：达到上限释放当前行并换行（原行本轮避开）。
-- pre-send 阶段（initialized/bootstrap/restart，OTP 未发出）的传输失败：释放当前行、
-  内存标记 pool_bad、同邮箱换代理重试 <=3 次，不消耗新邮箱；仍失败则标记 tried。
-- 业务拒绝 / pending / 已发 OTP 后的失败：整批停止——不换行、不重试、不补号。
-- region_waitlist：账号已注册但地区受限——记录 registered_waitlist（账号保留）并停止。
-- 预算 = 领取的不同邮箱数，失败不补号。
+Quy tắc điều phối:
+- Mỗi worker giữ riêng một dòng proxy cố định (claim/release); chỉ chia sẻ khi cạn danh sách và ghi nhật ký.
+- max_per_ip đếm lượt xác minh thành công; đạt giới hạn thì nhả và đổi proxy, tránh dòng vừa dùng.
+- Lỗi mạng trước khi gửi OTP (initialized/bootstrap/restart): nhả proxy hiện tại,
+  đánh dấu pool_bad trong bộ nhớ, thử lại cùng email với proxy khác tối đa 3 lần; vẫn lỗi thì đánh dấu tried.
+- Máy chủ từ chối, pending hoặc lỗi sau gửi OTP: dừng cả đợt, không đổi proxy, thử lại hay lấy email bù.
+- region_waitlist: tài khoản đã đăng ký nhưng bị giới hạn khu vực; lưu registered_waitlist và dừng.
+- Giới hạn số lượng tính theo số email khác nhau đã nhận xử lý, không bù email thất bại.
 
-每账号结果写入 output_dir/<email>.json（简化字段）。frl_access_token 与
-hatch_sess 仅在内存中使用，不落盘。仅供个人学习与研究使用。
+Kết quả từng tài khoản được ghi vào output_dir/<email>.json. frl_access_token và
+hatch_sess chỉ dùng trong bộ nhớ, không lưu ra đĩa. Chỉ dành cho học tập và nghiên cứu cá nhân.
 """
 
 import concurrent.futures as cf
@@ -32,7 +32,7 @@ TRANSPORT_MARKERS = (
     "timed out", "connectionerror", "connection reset", "connection refused",
 )
 
-# 常用日本姓名池（姓 / 名），register_completion 语义：first_name=名、last_name=姓
+# Danh sách họ/tên tiếng Nhật của bản gốc; register_completion dùng first_name=tên, last_name=họ
 SURNAMES = ["佐藤", "鈴木", "高橋", "田中", "伊藤", "渡辺", "山本", "中村", "小林", "加藤",
             "吉田", "山田", "佐々木", "山口", "松本", "井上", "木村", "林", "斎藤", "清水",
             "山崎", "森", "池田", "橋本", "阿部", "石川", "前田", "藤田", "小川", "岡田",
@@ -52,7 +52,7 @@ def _lines(path):
 
 
 def mkproxy(line):
-    """host:port:user:pass → http://user:pass@host:port；host:port → http://host:port"""
+    """host:port:user:pass → http://user:pass@host:port; host:port → http://host:port"""
     parts = (line or "").split(":")
     if len(parts) == 4:
         host, port, user, password = parts
@@ -64,13 +64,13 @@ def mkproxy(line):
 
 
 def proxy_endpoint(line):
-    """仅取 host:port，用于日志（不打印凭据）。"""
+    """Chỉ lấy host:port cho nhật ký, không in thông tin xác thực."""
     parts = (line or "").split(":")
     return f"{parts[0]}:{parts[1]}" if len(parts) >= 2 else None
 
 
 def _classify_error(exc):
-    """传输层失败归 transport_error；其余归 failed。不做任何 IP 封禁推断。"""
+    """Lỗi truyền tải là transport_error, lỗi còn lại là failed; không suy đoán IP bị chặn."""
     if isinstance(exc, (TimeoutError, ConnectionError)):
         return "transport_error"
     text = str(exc).lower()
@@ -84,7 +84,7 @@ def utc_stamp():
 
 
 class BatchRunner:
-    """多账号批量调度器。一个账号 = 一个新 MuseClient 实例 + 一条当前 sticky 代理行。"""
+    """Bộ điều phối nhiều tài khoản. Mỗi tài khoản dùng một MuseClient mới và một dòng proxy cố định hiện tại."""
 
     def __init__(self, config, *, client_factory=None, otp_waiter=None, ip_resolver=None):
         self.cfg = config
@@ -99,7 +99,7 @@ class BatchRunner:
         self.tried_file = config.get("tried_file")
         self.send_caa = bool(config.get("send_caa", False))
         self.resolve_ip = bool(config.get("resolve_ip", True))
-        # 注入点（离线测试用）：客户端工厂 / OTP 轮询 / 出口 IP 解析
+        # Điểm thay thế khi kiểm thử ngoại tuyến: tạo client / thăm dò OTP / xác định IP đầu ra
         self.client_factory = client_factory or self._default_client_factory
         self.otp_waiter = otp_waiter or self._default_otp_waiter
         self.ip_resolver = ip_resolver or self._default_ip_resolver
@@ -114,7 +114,7 @@ class BatchRunner:
         self._stats = {key: 0 for key in ("started", "ok", "pending", "server_rejected",
                                           "transport_error", "failed", "ip_switches")}
 
-    # ---------- 默认依赖 ----------
+    # ---------- Các thành phần mặc định ----------
 
     def _default_client_factory(self, proxy_url):
         return MuseClient(proxy=proxy_url, impersonate=self.fp, lang=self.lang)
@@ -131,10 +131,10 @@ class BatchRunner:
         ip = r.text.strip()
         return ip if ip.count(".") == 3 else None
 
-    # ---------- 池加载（预算 = count 个不同邮箱） ----------
+    # ---------- Nạp danh sách (giới hạn = count email khác nhau) ----------
 
     def init(self, count=30):
-        """加载邮箱/代理/验证码池。失败不补号；已在 tried_file 的邮箱跳过。"""
+        """Nạp email, proxy và mã mời; không bù email lỗi và bỏ qua email đã có trong tried_file."""
         count = int(count)
         if count < 1:
             raise ValueError("count_must_be_positive")
@@ -145,7 +145,7 @@ class BatchRunner:
             email, url = line.split("----", 1)
             email = email.strip()
             if not email or any(ch in email for ch in "/\\:\x00"):
-                continue  # 非法记录名，直接跳过
+                continue  # Tên bản ghi không hợp lệ, bỏ qua
             rows[email] = url.strip()
         tried = (set(_lines(self.tried_file))
                  if self.tried_file and os.path.exists(self.tried_file) else set())
@@ -169,7 +169,7 @@ class BatchRunner:
         os.makedirs(self.output_dir, exist_ok=True)
         return len(self.QUEUE)
 
-    # ---------- 批次状态 ----------
+    # ---------- Trạng thái đợt xử lý ----------
 
     def next_job(self):
         with self._lk:
@@ -194,10 +194,10 @@ class BatchRunner:
                     "stopped": self._stop.is_set(),
                     "stop_reason": self._stop_reason}
 
-    # ---------- 代理调度（worker 独占 sticky） ----------
+    # ---------- Điều phối proxy (mỗi worker giữ riêng một proxy cố định) ----------
 
     def _resolve_ip(self, line):
-        """resolve_ip=false → (None, True)：出口 IP 未知但行仍可用。"""
+        """resolve_ip=false → (None, True): chưa biết IP đầu ra nhưng vẫn dùng được proxy."""
         if not self.resolve_ip:
             return None, True
         with self._lk:
@@ -215,10 +215,10 @@ class BatchRunner:
         return ip, ip is not None
 
     def _pick_proxy(self, *, current=None, avoid=None):
-        """worker 独占 sticky 选择：已占用的行不交给其他 worker。
+        """Chọn proxy cố định riêng cho worker; không giao dòng đã giữ cho worker khác.
 
-        池耗尽或全部校验失败时：先复用自己的当前行，再找未占用行，
-        最后才共享（打日志）。avoid 排除刚换掉的行（达 max_per_ip 后）。
+        Khi cạn danh sách hoặc mọi xác minh thất bại: dùng lại dòng hiện tại, tìm dòng còn trống,
+        rồi mới chia sẻ và ghi nhật ký. avoid loại dòng vừa dùng đủ max_per_ip.
         """
         for _ in range(400):
             line = random.choice(self.PX)
@@ -261,19 +261,19 @@ class BatchRunner:
         with self._lk:
             shared = list(self._proxy_claims) or list(self.PX)
         line = random.choice(shared)
-        print(f"[i] proxy pool exhausted; sharing {proxy_endpoint(line)}", flush=True)
+        print(f"[i] Đã hết proxy riêng; dùng chung {proxy_endpoint(line)}", flush=True)
         with self._lk:
             self._proxy_claims.add(line)
         return line, self._ipcache.get(line)
 
     def _release(self, line):
-        """释放本 worker 的 sticky 占用；不动 pool_bad。"""
+        """Nhả proxy mà worker đang giữ; giữ nguyên pool_bad."""
         if not line:
             return
         with self._lk:
             self._proxy_claims.discard(line)
 
-    # ---------- 记录（简化字段，不含 token/cookie） ----------
+    # ---------- Lưu bản ghi (các trường rút gọn, không chứa token/cookie) ----------
 
     def _save_record(self, rec):
         path = os.path.join(self.output_dir, rec["email"] + ".json")
@@ -308,7 +308,7 @@ class BatchRunner:
         return None
 
     def _finish(self, email, rec, outcome, reason, stage, *, status=None):
-        """统一收口：落盘 → 决定是否整批停止。返回 (outcome, detail)。"""
+        """Lưu kết quả rồi quyết định dừng cả đợt; trả về (outcome, detail)."""
         rec.update(stage=stage, last_error=reason)
         if status is None:
             if rec.get("registered") and outcome == "ok":
@@ -327,13 +327,13 @@ class BatchRunner:
         return outcome, {"stage": stage, "status": status,
                          "registered": bool(rec.get("registered")), "reason": reason}
 
-    # ---------- 单账号全链（顺序对齐本地实现） ----------
+    # ---------- Quy trình đầy đủ cho một tài khoản, theo thứ tự của bản gốc ----------
 
     def register_one(self, email, proxy_line):
         """open→restart→send_otp→wait_otp→confirm→completion→activate_session
-        （onboarding 门）→accept_tos→wake→sharing→invite→redeem→own_code。
+        (kiểm tra quyền truy cập)→accept_tos→wake→sharing→invite→redeem→own_code.
 
-        返回 (outcome, detail)；outcome: ok|server_rejected|pending|transport_error|failed
+        Trả về (outcome, detail); outcome: ok|server_rejected|pending|transport_error|failed
         """
         rec = {"email": email, "status": "pending", "stage": "initialized",
                "registered": False, "own_code": None, "own_code_status": None,
@@ -378,7 +378,7 @@ class BatchRunner:
             token, uid = auth.get("frl_access_token"), auth.get("frl_account_id")
             if not token:
                 return self._finish(email, rec, "pending", "completion_result_unknown", stage)
-            rec["registered"] = True  # token 仅内存使用，不落盘
+            rec["registered"] = True  # Token chỉ dùng trong bộ nhớ, không lưu ra đĩa
             if caa:
                 caa.create_success(client.s, uid)
                 caa.login_success(client.s, uid)
@@ -451,18 +451,18 @@ class BatchRunner:
                 self._stats[outcome if outcome in self._stats else "failed"] += 1
             if outcome == "ok":
                 self._stamp_tried(email)
-                uses += 1  # max_per_ip 只按验证成功数计
+                uses += 1  # max_per_ip chỉ đếm lượt xác minh thành công
                 email, retries = None, 0
                 if uses >= self.max_per_ip and not self._stop.is_set():
                     self._release(proxy_line)
                     with self._lk:
                         self._stats["ip_switches"] += 1
-                    avoid = proxy_line  # 换行时避开刚用满的那条
+                    avoid = proxy_line  # Tránh dòng proxy vừa dùng đủ giới hạn khi chuyển proxy
                     proxy_line, uses = None, 0
             elif (outcome == "transport_error" and retries < 3
                     and detail.get("stage") in PRE_SEND_STAGES):
-                # pre-send 传输失败、零副作用：释放当前代理，同邮箱换代理重试，
-                # 不消耗新邮箱；pool_bad 仅内存标记，不写任何黑名单文件。
+                # Lỗi mạng trước gửi OTP: nhả proxy hiện tại, thử lại cùng email với proxy khác,
+                # không lấy email mới; pool_bad chỉ nằm trong bộ nhớ, không ghi file danh sách chặn.
                 retries += 1
                 self._release(proxy_line)
                 with self._lk:
@@ -470,10 +470,10 @@ class BatchRunner:
                 proxy_line = None
                 with self._lk:
                     self._stats["ip_switches"] += 1
-                print(f"  [W{wid}] proxy_retry#{retries} {email}", flush=True)
+                print(f"  [W{wid}] Thử lại với proxy khác #{retries} {email}", flush=True)
             else:
-                # 业务拒绝 / pending / 已发 OTP 后的失败：不换行、不重试、不补号；
-                # 整批停止由 register_one 的 _finish 里 request_stop 生效。
+                # Máy chủ từ chối, pending hoặc lỗi sau gửi OTP: không đổi proxy, thử lại hay lấy email bù;
+                # request_stop trong _finish của register_one sẽ dừng cả đợt.
                 self._stamp_tried(email)
                 email, retries = None, 0
             if self._stop.is_set():

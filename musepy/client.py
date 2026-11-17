@@ -1,7 +1,7 @@
 """
-muse.ai 注册与邀请码兑换协议客户端（纯 HTTP，无浏览器）
+Client giao thức đăng ký và đổi mã mời muse.ai (thuần HTTP, không cần trình duyệt)
 
-仅供协议研究与个人学习使用。使用前请自行确认目标站点的服务条款。
+Chỉ dành cho nghiên cứu giao thức và học tập cá nhân. Xem điều khoản của dịch vụ trước khi sử dụng.
 """
 
 import json
@@ -15,13 +15,13 @@ from curl_cffi import requests as cr
 
 BASE = "https://muse.ai"
 
-# 会话引导端点：register-completion 拿到 frl_access_token 后必须先走这里，
-# 否则后续所有 hatch 接口一律 403（本地运行时实测确认）。
+# Endpoint khởi tạo phiên: sau khi register-completion trả frl_access_token, phải gọi bước này trước.
+# Nếu bỏ qua, các API hatch tiếp theo trả về 403 theo ghi nhận thử nghiệm gốc.
 BOOTSTRAP_URL = "https://auth.meta.com/hatch/session/bootstrap/"
 TRUSTED_HOSTS = frozenset({"auth.meta.com", "auth.muse.ai", "muse.ai"})
 
-# onboarding 页面提交的 TOS 版本号，仅作 confirm-otp 未返回 tos.content_version
-# 时的兜底；正常情况下应使用 confirm_otp 动态返回的服务端版本。
+# Phiên bản TOS dự phòng cho trường hợp confirm-otp không trả tos.content_version.
+# Bình thường dùng phiên bản do máy chủ trả về trong confirm_otp.
 TOS_VERSION = "ntm_create_account:default_v1_meta_account_v3+docs_v2"
 
 HEADERS_JSON = {
@@ -41,7 +41,7 @@ HEADERS_GET = {
     "sec-fetch-dest": "empty",
 }
 HEADERS_HTML = {
-    # 完整浏览器文档 accept 串（抓包比对得出；截短版会在引导链上露馅）
+    # Header Accept đầy đủ của tài liệu trình duyệt, đối chiếu từ yêu cầu mạng gốc.
     "accept": ("text/html,application/xhtml+xml,application/xml;q=0.9,"
                "image/avif,image/webp,image/apng,*/*;q=0.8,"
                "application/signed-exchange;v=b3;q=0.7"),
@@ -50,8 +50,8 @@ HEADERS_HTML = {
     "sec-fetch-dest": "document",
 }
 
-# 抓包时服务端返回的披露正文参考。accept-tos 的正文已改为使用 activate_session()
-# 解析出的服务端动态 disclosure_text / disclosure_version，此常量仅作对照文档保留。
+# Nội dung điều khoản tiếng Nhật được ghi lại để tham khảo. accept-tos dùng dữ liệu động
+# disclosure_text / disclosure_version từ activate_session(); hằng số này chỉ để đối chiếu.
 DISCLOSURE_TEXT_JA = (
     "次に進むことで、Muse利用規約およびMetaのAI利用規約に同意するものとします。"
     "これには利用者の権利と責任に関する重要な情報が含まれています。"
@@ -60,11 +60,11 @@ DISCLOSURE_TEXT_JA = (
 
 
 class MuseError(RuntimeError):
-    """协议流程中的可预期失败"""
+    """Lỗi dự kiến trong quy trình giao thức"""
 
 
 class MuseClient:
-    """一个账号 = 一个 Session（一个出口 IP）"""
+    """Một tài khoản dùng một Session (một IP đầu ra)"""
 
     def __init__(self, proxy=None, impersonate="chrome142", lang="ja", timeout=30):
         self.fp = impersonate
@@ -75,10 +75,10 @@ class MuseClient:
                             proxies={"http": proxy, "https": proxy} if proxy else None,
                             timeout=timeout)
         self.csrf = None
-        self.tos_content_version = None   # confirm-otp 动态返回的服务端 TOS 版本
-        self.onboarding = None            # activate_session 解析出的披露结果
+        self.tos_content_version = None   # Phiên bản TOS do máy chủ trả về qua confirm-otp
+        self.onboarding = None            # Nội dung điều khoản được activate_session phân tích
 
-    # ---------- 基础设施 ----------
+    # ---------- Hàm hỗ trợ ----------
 
     def _h(self, base, extra=None):
         h = dict(base)
@@ -99,21 +99,21 @@ class MuseClient:
         except Exception:
             pass
 
-    # ---------- 注册流程 ----------
+    # ---------- Quy trình đăng ký ----------
 
     def open_home(self):
         return self.s.get(BASE + "/", impersonate=self.fp,
                           headers=self._h(HEADERS_HTML))
 
     def restart(self, resume=False):
-        """开启注册流程，返回 csrf_token"""
+        """Bắt đầu quy trình đăng ký và trả về csrf_token"""
         r = self.s.post(BASE + "/api/auth/native/restart", impersonate=self.fp,
                         headers=self._h(HEADERS_JSON), data=json.dumps({"resume": resume}))
         if r.status_code != 201:
             raise MuseError(f"restart {r.status_code}: {r.text[:120]}")
         self.csrf = self._json(r).get("csrf_token")
         if not self.csrf:
-            raise MuseError("restart 未返回 csrf_token")
+            raise MuseError("restart không trả về csrf_token")
         return self.csrf
 
     def _auth_headers(self):
@@ -132,7 +132,7 @@ class MuseClient:
         return self._json(r)
 
     def confirm_otp(self, code):
-        """关键：supports_muse_link_transparency 必须为 true"""
+        """Bắt buộc: supports_muse_link_transparency phải là true"""
         r = self.s.post(BASE + "/api/auth/native/confirm-otp", impersonate=self.fp,
                         headers=self._auth_headers(),
                         data=json.dumps({"otp_code": code,
@@ -144,16 +144,16 @@ class MuseClient:
         tos = data.get("tos")
         if (isinstance(tos, dict) and isinstance(tos.get("content_version"), str)
                 and tos["content_version"].strip()):
-            # register-completion 必须用服务端动态返回的版本，不再用硬编码常量
+            # register-completion dùng phiên bản động do máy chủ trả về.
             self.tos_content_version = tos["content_version"]
         return data
 
     def register_completion(self, date_of_birth, first_name, last_name, remember_device=True):
         """
-        完成注册。注意字段语义：
-          first_name = 名（given name）
-          last_name  = 姓（family name）
-        生日早于约 18 年前会被服务端拒绝（403）。
+        Hoàn tất đăng ký. Ý nghĩa các trường:
+          first_name = tên (given name)
+          last_name  = họ (family name)
+        Ngày sinh tương ứng với tuổi dưới khoảng 18 có thể bị máy chủ từ chối (403).
         """
         body = {
             "date_of_birth": date_of_birth,
@@ -176,39 +176,39 @@ class MuseClient:
                 return c.value
         return None
 
-    # ---------- 激活 ----------
+    # ---------- Kích hoạt ----------
 
     def _trusted_location(self, location, base_url):
-        """校验并解析 3xx 的 Location（相对路径按当前 URL 解析）。
+        """Kiểm tra và phân tích Location của phản hồi 3xx; đường dẫn tương đối dựa trên URL hiện tại.
 
-        只接受 https + 受信域（auth.meta.com / auth.muse.ai / muse.ai），
-        拒绝 userinfo、非 443 端口与含反斜杠/空白的目标。
+        Chỉ chấp nhận HTTPS và các miền tin cậy (auth.meta.com / auth.muse.ai / muse.ai),
+        từ chối userinfo, cổng khác 443 và đích chứa dấu gạch chéo ngược hoặc khoảng trắng.
         """
         if (not isinstance(location, str) or not location
                 or "\\" in location or any(ch.isspace() for ch in location)):
-            raise MuseError("activate_session 重定向 Location 非法")
+            raise MuseError("activate_session có Location chuyển hướng không hợp lệ")
         parts = urlsplit(urljoin(base_url, location))
         if (parts.scheme != "https" or parts.hostname not in TRUSTED_HOSTS
                 or parts.username is not None or parts.password is not None
                 or parts.port not in (None, 443)):
-            raise MuseError("activate_session 重定向目标不受信任")
+            raise MuseError("activate_session có đích chuyển hướng không đáng tin cậy")
         return urlunsplit(("https", parts.hostname, parts.path or "/", parts.query, ""))
 
     def activate_session(self, frl_access_token):
-        """会话引导（register-completion 之后、accept-tos 之前必须调用）。
+        """Khởi tạo phiên; bắt buộc gọi sau register-completion và trước accept-tos.
 
-        POST https://auth.meta.com/hatch/session/bootstrap/，form 表单只带
-        frl_access_token，allow_redirects=False 手动跟随 301/302/303 下一跳，
-        最终应落到 muse.ai 200 HTML 文档。从文档中解析动态披露与状态门：
-          - resolvedDestination=="waitlist" 或 isGeoGated=True
-                → MuseError("region_waitlist")（账号已注册但地区受限，未证明已加入名单）
-          - 披露文本/版本冲突或缺失 → MuseError("disclosure_context_unresolved")
-          - 仅支持 disclosureVersion=="HATCH_ROW_v0"，未知版本不猜参数
-        成功返回 dict（含 disclosure_text / disclosure_version / source_url），
-        直接传给 accept_tos()。
+        POST https://auth.meta.com/hatch/session/bootstrap/ bằng form chỉ chứa
+        frl_access_token; dùng allow_redirects=False và tự theo chuyển hướng 301/302/303,
+        đến tài liệu HTML muse.ai trả 200. Phân tích điều khoản động và điều kiện truy cập:
+          - resolvedDestination=="waitlist" hoặc isGeoGated=True
+                → MuseError("region_waitlist") (đã đăng ký nhưng bị giới hạn khu vực, chưa xác nhận vào danh sách chờ)
+          - Thiếu hoặc xung đột nội dung/phiên bản điều khoản → MuseError("disclosure_context_unresolved")
+          - Chỉ hỗ trợ disclosureVersion=="HATCH_ROW_v0"; không suy đoán tham số cho phiên bản lạ
+        Thành công trả về dict chứa disclosure_text / disclosure_version / source_url,
+        truyền trực tiếp cho accept_tos().
         """
         if not isinstance(frl_access_token, str) or not frl_access_token.strip():
-            raise MuseError("activate_session 缺少 frl_access_token")
+            raise MuseError("activate_session thiếu frl_access_token")
         url, method, hops = BOOTSTRAP_URL, "POST", 0
         while True:
             headers = self._h(HEADERS_HTML)
@@ -233,15 +233,15 @@ class MuseClient:
             if r.status_code in (301, 302, 303):
                 hops += 1
                 if hops > 6:
-                    raise MuseError("activate_session 重定向次数过多")
+                    raise MuseError("activate_session chuyển hướng quá nhiều lần")
                 url, method = self._trusted_location(r.headers.get("location"), url), "GET"
                 continue
             break
         if r.status_code != 200:
-            raise MuseError(f"activate_session 引导失败 {r.status_code}: {r.text[:120]}")
+            raise MuseError(f"activate_session khởi tạo thất bại {r.status_code}: {r.text[:120]}")
         final = urlsplit(url)
         if final.hostname != "muse.ai":
-            raise MuseError(f"activate_session 最终落在非 muse.ai 域（{final.hostname}）")
+            raise MuseError(f"activate_session kết thúc ở miền khác muse.ai ({final.hostname})")
         onboarding = parse_onboarding(r.text)
         if onboarding["state"] == "waitlist":
             raise MuseError("region_waitlist")
@@ -252,16 +252,16 @@ class MuseClient:
         return onboarding
 
     def accept_tos(self, onboarding=None):
-        """必须调用，否则后续 hatch 接口一律 403。单次调用即可，不重试。
+        """Bắt buộc gọi để các API hatch tiếp theo không trả 403; chỉ gọi một lần, không thử lại.
 
-        onboarding 必须是 activate_session() 返回的解析结果：正文取服务端
-        动态返回的 disclosure_text / disclosure_version（不再用硬编码常量），
-        Referer 用实际披露页 URL。
+        onboarding phải là kết quả phân tích do activate_session() trả về; dùng nội dung
+        disclosure_text / disclosure_version động từ máy chủ,
+        và Referer là URL thực của trang điều khoản.
         """
         text = (onboarding or {}).get("disclosure_text")
         version = (onboarding or {}).get("disclosure_version")
         if not text or not version:
-            raise MuseError("accept_tos 缺少动态披露结果，请先调用 activate_session()")
+            raise MuseError("accept_tos thiếu điều khoản động; hãy gọi activate_session() trước")
         body = {
             "saw_meta_ai_tos": False,
             "client_request_timestamp": str(int(time.time())),
@@ -287,17 +287,17 @@ class MuseClient:
                           headers=self._h(HEADERS_GET))
 
     def is_live(self):
-        """invite 200 = 有效账号；401/403 = 无 hatch 权限"""
+        """invite 200 = tài khoản hợp lệ; 401/403 = chưa có quyền truy cập hatch"""
         try:
             return self.invite().status_code == 200
         except Exception:
             return False
 
     def wake_vm(self):
-        """必须调用，否则兑换会返回误导性的 invalid。
+        """Phải gọi trước khi đổi mã để tránh kết quả invalid gây hiểu nhầm.
 
-        首连 wake_trigger 用 "mount"，body 带 open_id（新 uuid）与 away_ms=0；
-        wake 前先 GET /?aymh_complete=1 从文档里解析 vmId（保留原有逻辑）。
+        Kết nối đầu dùng wake_trigger="mount", body có open_id (UUID mới) và away_ms=0;
+        trước wake, GET /?aymh_complete=1 để phân tích vmId từ tài liệu theo logic gốc.
         """
         r = self.s.get(BASE + "/?aymh_complete=1", impersonate=self.fp,
                        headers=self._h(HEADERS_HTML))
@@ -319,11 +319,11 @@ class MuseClient:
         return self.s.post(BASE + "/api/hatch/stateful-sharing", impersonate=self.fp,
                            headers=self._h(HEADERS_JSON), data="")
 
-    # ---------- 兑换 ----------
+    # ---------- Đổi mã ----------
 
     def redeem(self, code):
         """
-        兑换邀请码。返回 (ok, reason)。
+        Đổi mã mời. Trả về (ok, reason).
           reason: redeemed | already_redeemed | used_up | invalid
         """
         r = self.s.post(BASE + "/api/hatch/invite-code/redeem", impersonate=self.fp,
@@ -335,10 +335,10 @@ class MuseClient:
         return False, data.get("reason") or f"http-{r.status_code}"
 
     def scratch_code(self):
-        """兑换成功后取回本账号已分配的邀请码。
+        """Lấy mã mời đã cấp cho tài khoản sau khi đổi mã thành công.
 
-        注意：POST /api/hatch/invite 只返回（自己的）邀请码本身，
-        并不等于把页面上已刮开的码再"刮开/揭示"（reveal）一次。
+        POST /api/hatch/invite chỉ trả về mã mời của tài khoản,
+        không thực hiện thao tác cào để hiện mã (reveal) trên giao diện.
         """
         r = self.s.post(BASE + "/api/hatch/invite", impersonate=self.fp,
                         headers=self._h(HEADERS_JSON), data="")
@@ -352,7 +352,7 @@ def _uuid():
 
 
 def _flight_chunks(text):
-    """抽取 self.__next_f.push 序列化的字符串数据（纯文本解析，不执行任何脚本）。"""
+    """Trích chuỗi dữ liệu từ self.__next_f.push bằng phân tích văn bản, không thực thi script."""
     chunks = []
     if not isinstance(text, str):
         return chunks
@@ -371,13 +371,13 @@ def _flight_chunks(text):
 
 
 def parse_onboarding(html):
-    """解析 muse.ai 引导文档里的 Next Flight 数据（离线纯函数，不发请求）。
+    """Phân tích Next Flight trong tài liệu khởi tạo muse.ai; hàm thuần, ngoại tuyến, không gửi yêu cầu.
 
-    返回 dict：state = disclosure | waitlist | unresolved。
-      - resolvedDestination=="waitlist" 或 isGeoGated is True → state="waitlist"
-      - 披露文本/版本冲突或缺失 → state="unresolved"（不猜测参数）
-      - 仅支持 disclosureVersion=="HATCH_ROW_v0"，未知版本同样 unresolved
-    status 字段（isGeoGated / hasHatchAccess / waitlistStatus）原样透传。
+    Trả về dict: state = disclosure | waitlist | unresolved.
+      - resolvedDestination=="waitlist" hoặc isGeoGated is True → state="waitlist"
+      - Thiếu hoặc xung đột nội dung/phiên bản điều khoản → state="unresolved" (không suy đoán tham số)
+      - Chỉ hỗ trợ disclosureVersion=="HATCH_ROW_v0"; phiên bản lạ cũng trả unresolved
+    Giữ nguyên các giá trị trạng thái isGeoGated / hasHatchAccess / waitlistStatus.
     """
     states, disclosures = [], []
     objects = []
@@ -398,7 +398,7 @@ def parse_onboarding(html):
         try:
             collect(json.loads(data))
         except (ValueError, TypeError):
-            continue  # 模块/文本导入等非 JSON 数据行
+            continue  # Bỏ qua dòng dữ liệu không phải JSON, như tham chiếu module hoặc văn bản
     for obj in objects:
         if "resolvedDestination" in obj and isinstance(obj.get("status"), dict):
             status = obj["status"]

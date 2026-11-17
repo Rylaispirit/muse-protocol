@@ -1,7 +1,7 @@
-"""OTP 验证码轮询（开源版）。
+"""Thăm dò mã xác minh OTP.
 
-select_otp 为纯函数；wait_otp 轮询 OTP 源 URL，只取 send 开始时间之后的
-新 6 位验证码（幂等：同一封邮件重试不会把旧码再当新码用）。
+select_otp là hàm thuần; wait_otp thăm dò URL nguồn OTP và chỉ lấy
+mã 6 chữ số mới sau mốc gửi; thử lại cùng hộp thư không dùng nhầm mã cũ.
 """
 
 import json
@@ -13,7 +13,7 @@ UTC = timezone.utc
 
 
 def parse_iso8601(value):
-    """解析为带时区的 UTC 时间；naive 输入视为未知，返回 None。"""
+    """Phân tích thành thời gian UTC có múi giờ; đầu vào thiếu múi giờ trả None."""
     try:
         if isinstance(value, datetime):
             parsed = value
@@ -29,10 +29,10 @@ def parse_iso8601(value):
 
 
 def select_otp(records, after):
-    """取严格晚于 after 的最新 6 位数字验证码；最新一秒出现多个不同码视为歧义。
+    """Chọn mã 6 chữ số mới nhất, sau after; nhiều mã khác nhau cùng thời điểm mới nhất là không rõ ràng.
 
     records: [{"otp": "123456", "time": "<ISO8601>"}, ...]
-    after:   本次 send_otp 开始时间（ISO8601 字符串或 datetime）。
+    after:   Mốc gửi của lần send_otp này (chuỗi ISO 8601 hoặc datetime).
     """
     boundary = parse_iso8601(after)
     if boundary is None or not isinstance(records, list):
@@ -56,12 +56,12 @@ def select_otp(records, after):
 
 def wait_otp(url, after, *, timeout=45, poll_interval=0.6, request_timeout=15,
              session_factory=None):
-    """轮询 OTP 源 URL 直到出现新验证码。
+    """Thăm dò URL nguồn OTP cho đến khi có mã xác minh mới.
 
-    - 每 poll_interval 秒 GET 一次；单次请求超时 request_timeout；
-    - 总超时 timeout 秒（默认 45s）；
-    - 源返回非 200 / 非 JSON 列表 → None；网络异常向上抛（按 transport_error 处理）；
-    - session_factory 可注入假会话（离线测试用），默认新建 curl_cffi Session。
+    - GET mỗi poll_interval giây; mỗi yêu cầu chờ tối đa request_timeout giây;
+    - Tổng thời gian chờ timeout giây (mặc định 45 giây);
+    - Phản hồi khác 200 hoặc không phải mảng JSON → None; lỗi mạng được ném lên (transport_error);
+    - session_factory cho phép dùng phiên giả lập để kiểm thử ngoại tuyến; mặc định tạo curl_cffi Session.
     """
     if session_factory is not None:
         session = session_factory()

@@ -1,8 +1,8 @@
 """
-falco 埋点上报（可选）
+Báo cáo sự kiện falco (tùy chọn)
 
-站点前端会通过 POST /api/falco 批量上报行为事件。缺失这些上报不会直接
-导致注册失败，但会让会话的行为特征显著区别于真实浏览器。
+Frontend gửi hàng loạt sự kiện hành vi qua POST /api/falco. Theo ghi nhận gốc, bỏ báo cáo
+không trực tiếp làm đăng ký thất bại nhưng khiến đặc điểm phiên khác với trình duyệt thực.
 """
 
 import json
@@ -76,7 +76,7 @@ def perf(uri, nav_type="navigate", seconds=None):
 
 
 def send(session, impersonate, lang, session_id, events):
-    """发送一批事件；失败静默"""
+    """Gửi một nhóm sự kiện; bỏ qua lỗi"""
     if not events:
         return None
     body = {"sessionId": session_id, "user": {"kind": "loggedOut"},

@@ -1,8 +1,8 @@
 """
-caa-events 上报（Create Account Analytics）
+Báo cáo caa-events (Create Account Analytics)
 
-前端通过 navigator.sendBeacon 逐步骤上报注册漏斗事件，同一 waterfall_id
-贯穿整个流程。这些事件不参与注册判定，但构成完整的漏斗数据。
+Frontend dùng navigator.sendBeacon báo cáo từng bước đăng ký, cùng một waterfall_id
+xuyên suốt quy trình. Các sự kiện này phục vụ thống kê, không quyết định kết quả đăng ký.
 """
 
 import json
@@ -43,7 +43,7 @@ class Caa:
         except Exception:
             return None
 
-    # ---- 联系点页 ----
+    # ---- Trang nhập thông tin liên hệ ----
 
     def page_shown(self, s):
         return self._send(s, [{
@@ -67,7 +67,7 @@ class Caa:
             "extra_client_data": {"is_native": "1"},
             "waterfall_id": self.wid, "client_time_ms": _ms()}])
 
-    # ---- 注册漏斗 ----
+    # ---- Các bước đăng ký ----
 
     def registration_start(self, s):
         return self._send(s, [
