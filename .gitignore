@@ -2,3 +2,4 @@ config.json
 output/
 *.log
 __pycache__/
+.venv/

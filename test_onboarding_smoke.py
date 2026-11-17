@@ -1,7 +1,7 @@
-"""离线冒烟：musepy.client.parse_onboarding 纯函数（不联网、不执行页面脚本）。
+"""Kiểm thử ngoại tuyến hàm thuần musepy.client.parse_onboarding, không chạy script của trang.
 
-运行：python test_onboarding_smoke.py
-用例：正常披露 / waitlist / 披露冲突，外加一条非 push 脚本混入的干扰项。
+Chạy: python test_onboarding_smoke.py
+Trường hợp: điều khoản bình thường, waitlist, xung đột và script không phải push để kiểm tra nhiễu.
 """
 
 import json
@@ -14,7 +14,7 @@ from musepy.client import parse_onboarding
 
 
 def _html(*push_chunks):
-    """合成一个带 self.__next_f.push 的 muse.ai 风格文档。"""
+    """Tạo tài liệu kiểu muse.ai có self.__next_f.push."""
     scripts = []
     for chunk in push_chunks:
         scripts.append(
@@ -25,7 +25,7 @@ def _html(*push_chunks):
 
 
 def _row(row_id, payload):
-    # 真实 Flight chunk 以换行结尾，这里保持一致
+    # Flight chunk thực kết thúc bằng ký tự xuống dòng; giữ nguyên cấu trúc đó
     return row_id + ":" + json.dumps(payload) + "\n"
 
 
@@ -92,7 +92,7 @@ def main():
     for name, fn in tests:
         fn()
         print(f"[PASS] {name}")
-    print(f"冒烟通过 {len(tests)}/{len(tests)}")
+    print(f"Kiểm thử đạt {len(tests)}/{len(tests)}")
 
 
 if __name__ == "__main__":

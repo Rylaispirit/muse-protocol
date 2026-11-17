@@ -1,9 +1,9 @@
-"""离线冒烟：musepy.runner 批量调度语义（mock 网络，不联网）。
+"""Kiểm thử ngoại tuyến quy tắc điều phối của musepy.runner bằng mạng giả lập.
 
-覆盖：select_otp 幂等 / wait_otp 轮询 / claim 独占 / sticky 复用与
-max_per_ip 换行 / pre-send 重试上限与 tried 标记 / 业务拒绝停批不换行 /
-region_waitlist 停止且账号保留 / 预算不超领 / 记录字段无 token/cookie。
-运行：python test_runner_smoke.py
+Kiểm tra: select_otp không dùng lại mã cũ, wait_otp thăm dò, giữ riêng proxy, dùng lại proxy và
+chuyển khi đạt max_per_ip, giới hạn thử lại trước gửi OTP, đánh dấu tried, dừng khi máy chủ từ chối,
+dừng khi region_waitlist và giữ tài khoản, không vượt số lượng, không lưu token/cookie.
+Chạy: python test_runner_smoke.py
 """
 
 import json
@@ -19,10 +19,10 @@ from musepy.otp import select_otp, wait_otp
 from musepy.runner import BatchRunner, mkproxy
 
 
-# ---------- 假客户端 / 假会话 ----------
+# ---------- Client và phiên giả lập ----------
 
 class FakeClient:
-    """MuseClient 形状的假实现；fail_stage 在指定阶段抛传输异常。"""
+    """Giả lập giao diện MuseClient; fail_stage gây lỗi truyền tải ở bước đã chỉ định."""
 
     fp = "chrome142"
     lang = "ja"
@@ -111,7 +111,7 @@ class FakeOtpSession:
         pass
 
 
-# ---------- 测试脚手架 ----------
+# ---------- Hàm hỗ trợ kiểm thử ----------
 
 def make_runner(tmp, email_lines, proxy_lines, count, maker, *, codes=None, **overrides):
     otp_file = os.path.join(tmp, "otp.txt")
@@ -166,20 +166,20 @@ EMAILS = [f"e{i}@x.test----https://otp.example/{i}" for i in range(3)]
 PROXIES = ["10.0.0.1:8000:u:p", "10.0.0.2:8001:u:p", "10.0.0.3:8002:u:p"]
 
 
-# ---------- 用例 ----------
+# ---------- Các trường hợp kiểm thử ----------
 
 def case_select_otp_idempotent():
     before = "2026-01-01T00:00:00+00:00"
     after = "2026-01-01T00:01:00+00:00"
-    records = [{"otp": "111111", "time": before},   # 早于 send 开始 → 排除
+    records = [{"otp": "111111", "time": before},   # Trước mốc gửi → bỏ qua
                {"otp": "222222", "time": after},
-               {"otp": "333333", "time": after}]    # 最新一秒两个码 → 歧义
+               {"otp": "333333", "time": after}]    # Hai mã ở thời điểm mới nhất → không rõ ràng
     assert select_otp(records, after) is None
     assert select_otp(records[:1], after) is None
     ok = [{"otp": "111111", "time": before},
           {"otp": "444444", "time": "2026-01-01T00:02:00+00:00"}]
     assert select_otp(ok, after) == "444444"
-    # 幂等：把边界推到该码之后，同一份记录不再返回旧码
+    # Dời mốc lọc đến mã đã nhận; cùng dữ liệu không được trả lại mã cũ
     assert select_otp(ok, "2026-01-01T00:02:00+00:00") is None
 
 
@@ -203,14 +203,14 @@ def case_wait_otp_poll():
 def case_claim_exclusive():
     with tempfile.TemporaryDirectory() as d:
         runner, _ = make_runner(d, EMAILS[:1], PROXIES[:2], 1, FakeClient)
-        runner._proxy_claims.add(PROXIES[0])          # 其他 worker 已占用
+        runner._proxy_claims.add(PROXIES[0])          # Worker khác đang giữ
         line, _ = runner._pick_proxy()
-        assert line == PROXIES[1], line               # 不抢他人的行
+        assert line == PROXIES[1], line               # Không lấy dòng worker khác đang giữ
         runner._proxy_claims.add(PROXIES[1])
-        line, _ = runner._pick_proxy()                # 池耗尽 → 共享 + 日志
+        line, _ = runner._pick_proxy()                # Cạn danh sách → chia sẻ và ghi nhật ký
         assert line in PROXIES, line
         line, _ = runner._pick_proxy(current=PROXIES[0])
-        assert line == PROXIES[0], line               # sticky：复用自己的行
+        assert line == PROXIES[0], line               # Dùng lại dòng proxy cố định đang giữ
 
 
 def case_sticky_reuse_and_switch():
@@ -221,9 +221,9 @@ def case_sticky_reuse_and_switch():
         s = runner.summary()
         assert s["ok"] == 3 and s["ip_switches"] == 1, s
         urls = [c.proxy_url for c in clients]
-        assert urls[0] == urls[1]                     # 同一条 sticky 代理复用多个账号
+        assert urls[0] == urls[1]                     # Dùng lại cùng proxy cố định cho nhiều tài khoản
         other = [mkproxy(p) for p in PROXIES[:2] if mkproxy(p) != urls[0]][0]
-        assert urls[2] == other                       # 达 max_per_ip 后换到另一条
+        assert urls[2] == other                       # Chuyển proxy khác sau khi đạt max_per_ip
 
 
 def case_presend_retry_cap():
@@ -233,13 +233,13 @@ def case_presend_retry_cap():
         runner.run()
         s = runner.summary()
         assert s["started"] == 2 and s["ok"] == 0, s
-        assert s["transport_error"] == 8, s           # 每邮箱 1+3 次尝试都计入 stats
-        assert s["ip_switches"] == 6, s               # 每邮箱 3 次换代理重试
+        assert s["transport_error"] == 8, s           # Tính đủ 1+3 lần thử cho mỗi email vào stats
+        assert s["ip_switches"] == 6, s               # Mỗi email có 3 lần đổi proxy và thử lại
         assert s["remaining"] == 0 and s["stopped"] is False, s
-        assert len(clients) == 8, len(clients)        # 每邮箱 1 + 3 次换代理重试
+        assert len(clients) == 8, len(clients)        # Mỗi email có 1 lần đầu và 3 lần đổi proxy thử lại
         tried = tried_lines(d)
         assert "e0@x.test" in tried and "e1@x.test" in tried
-        assert "e2@x.test" not in tried               # 第三个邮箱未被消耗
+        assert "e2@x.test" not in tried               # Không lấy email thứ ba
 
 
 def case_business_reject_stops():
@@ -251,10 +251,10 @@ def case_business_reject_stops():
         s = runner.summary()
         assert s["started"] == 1 and s["server_rejected"] == 1, s
         assert s["stopped"] is True and s["stop_reason"] == "workflow_paused", s
-        assert s["ip_switches"] == 0, s               # 业务拒绝不换行
+        assert s["ip_switches"] == 0, s               # Không đổi proxy khi máy chủ từ chối
         assert len({c.proxy_url for c in clients}) == 1
         rec = load_record(d, "e0@x.test")
-        # 已注册但兑换未成功：status 口径与本地一致（outcome 仍计入 server_rejected）
+        # Đã đăng ký nhưng chưa đổi được mã: giữ status theo bản gốc, outcome vẫn tính vào server_rejected
         assert rec["status"] == "registered_pending_redemption", rec
         assert rec["registered"] is True and rec["stage"] == "redeem", rec
         assert rec["last_error"].startswith("redemption_unverified"), rec
@@ -269,7 +269,7 @@ def case_region_waitlist():
         s = runner.summary()
         assert s["started"] == 1 and s["stopped"] is True, s
         rec = load_record(d, "e0@x.test")
-        assert rec["status"] == "registered_waitlist", rec   # 账号保留
+        assert rec["status"] == "registered_waitlist", rec   # Giữ tài khoản đã đăng ký
         assert rec["registered"] is True and rec["stage"] == "session_bootstrap", rec
         assert rec["last_error"] == "region_waitlist", rec
 
@@ -317,7 +317,7 @@ def main():
     for name, fn in tests:
         fn()
         print(f"[PASS] {name}")
-    print(f"冒烟通过 {len(tests)}/{len(tests)}")
+    print(f"Kiểm thử đạt {len(tests)}/{len(tests)}")
 
 
 if __name__ == "__main__":
